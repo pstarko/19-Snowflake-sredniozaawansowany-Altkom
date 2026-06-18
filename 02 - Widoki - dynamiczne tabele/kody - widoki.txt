@@ -1,0 +1,319 @@
+/*
+W Snowflake widoki zwykłe i materializowane służą do różnych celów: 
+    zwykły widok to tylko zapis definicji zapytania,   
+    zmaterializowany widok przechowuje wynik zapytania fizycznie i dzięki temu przyspiesza odczyt kosztem miejsca oraz utrzymania.
+
+Różnice między widokami
+    Zwykły widok nie przechowuje danych; za każdym razem, gdy go używasz, Snowflake wykonuje zapytanie na nowo.
+
+    Zmaterializowany widok przechowuje precomputed result set, więc odczyt jest zwykle szybszy, ale potrzebuje storage i background maintenance.
+	
+W praktyce zwykły widok jest lepszy do logiki biznesowej i warstwy semantycznej, a materializowany do przyspieszania ciężkich, często powtarzanych odczytów
+
+	| Cecha            | Zwykły widok                   | Materializowany widok                   |
+	| ---------------- | ------------------------------ | --------------------------------------- |
+	| Dane             | Nie są przechowywane           | Są przechowywane fizycznie mareknowak+1 |
+	| Wydajność        | Zależy od zapytania bazowego   | Zwykle szybszy odczyt reddit            |
+	| Koszt            | Głównie brak kosztu utrzymania | Storage + compute na maintenance reddit |
+	| Elastyczność SQL | Duża                           | Ograniczona reddit                      |
+	| Aktualność       | Zawsze liczone na bieżąco      | Automatycznie utrzymywana w tle reddit  |
+
+
+Use case'y
+	Materialized views najlepiej sprawdzają się, gdy wynik jest używany często, ale zmienia się relatywnie rzadko, a samo przeliczenie jest kosztowne
+	Snowflake szczególnie wskazuje na zapytania z ciężkimi agregacjami, selekcjami, projekcją, przetwarzaniem semi-structured data oraz na sytuacje, 
+		gdy bazowa tabela jest duża, a wynik obejmuje tylko mały podzbiór kolumn lub wierszy.
+	Dodatkowo optimizer może automatycznie przepisać zapytanie tak, by użyć materializowanego widoku nawet wtedy, gdy użytkownik odpyta tabelę bazową.
+		To sprawia, że są dobre do raportów, dashboardów, pre-agregacji i często powtarzanych filtrów po dużych faktach
+
+Ograniczenia
+	Najważniejsze ograniczenie w Snowflake jest takie, że materialized view może opierać się tylko o jedną tabelę; 
+		nie ma joinów, self-joinów, zagnieżdżonych subquery, window functions, HAVING, ORDER BY ani LIMIT.
+	Nie wolno też używać wielu funkcji i konstrukcji niedeterministycznych, np. CURRENT_TIMESTAMP, oraz wielu form agregacji i operatorów setowych.	
+	Materialized view nie wspiera standardowego DML bezpośrednio na sobie: nie zrobisz INSERT, UPDATE, DELETE, MERGE ani TRUNCATE na samym widoku.
+	Jeśli zmienisz lub usuniesz kolumny w tabeli bazowej, materialized views mogą zostać zawieszone i często trzeba je odtworzyć.
+
+Aktualizacje i maintenance
+	Snowflake utrzymuje materialized views automatycznie w tle; po zmianach w tabeli bazowej aktualizacje są wykonywane przez background service, a dane pozostają aktualne.
+	Jeśli maintenance trochę „nie nadąża”, Snowflake może odczytać świeże fragmenty z tabeli bazowej i połączyć je z istniejącą częścią widoku, 
+		więc wynik nadal będzie poprawny. Stan można monitorować przez SHOW MATERIALIZED VIEWS, gdzie przydatne są pola REFRESHED_ON, COMPACTED_ON i BEHIND_BY.	
+	Widok można też ręcznie zawiesić i wznowić poleceniami ALTER MATERIALIZED VIEW ... SUSPEND oraz ... RESUME.
+	
+Kiedy wybrać co
+	Użyj zwykłego widoku, gdy potrzebujesz elastycznej warstwy SQL, prostego ukrywania danych, modularizacji logiki albo gdy wyniki zmieniają się często.
+	Użyj materializowanego widoku, gdy masz ciężkie, często wykonywane zapytanie na dużych danych i chcesz kupić czas odczytu kosztem storage oraz kosztów maintenance.
+	Jeśli wzorzec użycia jest bardziej dynamiczny albo liczysz na częste odświeżanie z kontrolowanym lagiem, często warto też rozważyć dynamic tables, które Snowflake pozycjonuje 
+		obok widoków i materialized views jako osobny mechanizm transformacji danych.
+		
+Praktyczne wskazówki
+	Nie opieraj materialized view na SELECT *, bo nowe kolumny z tabeli bazowej nie propagują się automatycznie do widoku.
+	W definicji używaj pełnych nazw tabel bazowych, żeby ograniczyć ryzyko zerwania referencji po przeniesieniu obiektów.
+	Przed wdrożeniem warto sprawdzić, czy optimizer już nie używa istniejącego materialized view przez EXPLAIN lub Query Profile, bo czasem nowy obiekt nie jest potrzebny.
+	
+*/
+
+--wcześniej pobranie danych z Marketplace -> Snowflake Public Data (Free)
+
+
+CREATE OR REPLACE TABLE public_airport 
+AS 
+select * from SNOWFLAKE_PUBLIC_DATA_FREE.PUBLIC_DATA_FREE.AIRPORT_INDEX;
+
+
+
+--zwykły widok
+CREATE OR REPLACE VIEW airport_location AS
+SELECT
+  airport_id,
+  airport_name,
+  location
+FROM public_airport;
+
+--widać skąd pobiera dane
+explain
+select * from airport_location;
+
+explain using text
+select * from airport_location;
+
+--widok zmaterializowany
+CREATE OR REPLACE MATERIALIZED VIEW mv_airport_location AS
+SELECT
+  airport_id,
+  airport_name,
+  location
+FROM public_airport;
+
+select * from mv_airport_location;
+
+update public_airport set airport_name = 'Newtok - NEW' where airport_id = '36883EWU';
+
+--zmiany widoczne w obu obiektach
+select * from public_airport where airport_id = '36883EWU';
+select * from mv_airport_location where airport_id = '36883EWU';
+
+explain
+select * from mv_airport_location;
+
+
+--DYNAMIC TABLE
+/*
+Dynamic tables i materialized views w Snowflake wyglądają podobnie, bo oba przechowują wynik zapytania fizycznie, ale służą do innych rzeczy.
+
+
+Najważniejsza różnica
+	Materialized view jest przede wszystkim po to, żeby przyspieszyć odczyt często wykonywanych zapytań, 
+		zwłaszcza agregacji i filtrów na dużych danych.
+
+	Dynamic table jest bardziej jak zarządzany pipeline transformacji: Snowflake utrzymuje wynik zapytania zgodnie z zadanym target lag i 
+		może obsługiwać bardziej złożoną logikę ETL/ELT.
+
+| Cecha            | Materialized view                                                 | Dynamic table                                                                                       |
+| ---------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Główny cel       | Przyspieszenie zapytań docs.snowflake                             | Automatyzacja transformacji danych docs.snowflake+1                                                 |
+| Odświeżanie      | Automatyczne na bazie zmian w danych źródłowych docs.snowflake    | Automatyczne wg target lag / harmonogramu świeżości snowflake                                       |
+| Złożoność logiki | Raczej ograniczona docs.snowflake                                 | Bardziej elastyczna, nadaje się do złożonych transformacji docs.snowflake+1                         |
+| Typowe użycie    | Dashboards, szybkie agregacje, powtarzalne odczyty docs.snowflake | Warstwy transformacyjne, modele pośrednie, pipeline bez zewnętrznego orkiestratora docs.snowflake+1 |
+| Koszt            | Storage + compute na utrzymanie docs.snowflake                    | Storage + compute na utrzymanie docs.snowflake+1                                                    |
+
+
+Kiedy materialized view
+	Wybierz materialized view, gdy masz jedno, ciężkie zapytanie, które odpala się bardzo często, a jego wynik da się opisać prostą definicją SQL.
+	To dobry wybór do pre-agregacji danych pod dashboardy i raporty, gdzie liczy się szybki czas odpowiedzi.
+
+Kiedy dynamic table
+	Wybierz dynamic table, gdy chcesz utrzymywać transformowany dataset automatycznie, bez budowania osobnego joba w Airflow, dbt czy podobnym narzędziu.
+	To lepsza opcja dla pipeline’ów, które zawierają joiny, bardziej rozbudowane logiki i kilka etapów przetwarzania
+
+Materialized view odpowiada na pytanie: „jak szybciej czytać?”.
+Dynamic table odpowiada na pytanie: „jak wygodnie utrzymywać przetworzony zbiór danych?”.
+
+Praktyczny wybór
+	Jeśli budujesz dashboard KPI i chcesz błyskawicznych agregacji, częściej pasuje materialized view.
+	Jeśli budujesz warstwę curated data z kilkoma krokami transformacji, zwykle lepiej pasuje dynamic table.
+	
+Jak monitorować koszty i lag dla dynamic tables w Snowflake
+
+Lag
+	Snowflake udostępnia funkcję DYNAMIC_TABLES, która zwraca metryki laga i wynik ostatniego odświeżenia dla wszystkich dynamic tables w koncie.
+	Do analizy pojedynczej tabeli lub całego pipeline’u przydaje się też DYNAMIC_TABLE_REFRESH_HISTORY, która pokazuje historię refreshy, ich statusy i czasy wykonania.
+	W Snowsight możesz zobaczyć target lag, actual lag oraz refresh history bez pisania SQL.
+	
+*/
+
+	SELECT *
+	FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES());	
+	
+--Albo dla historii refreshy:
+	
+	SELECT *
+	FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY());
+
+/*
+Koszty
+	Dynamic tables generują koszty w trzech obszarach: warehouse compute, Cloud Services i storage.
+	Warehouse kosztuje wtedy, gdy tabela faktycznie się odświeża i trzeba policzyć query na danych źródłowych.
+	Cloud Services kosztuje za wykrywanie zmian, orkiestrację refreshy i utrzymanie zależności, nawet jeśli nie było zmian do przeliczenia.
+	Storage rośnie wraz z rozmiarem samej dynamic table i liczbą zapisanych micro-partitions.		
+
+Co sprawdzać
+
+W praktyce najlepiej śledzić:
+	target lag vs actual lag, żeby zobaczyć, czy świeżość danych mieści się w SLA.
+	refresh duration, żeby wyłapać ciężkie przeliczenia.
+	refresh status i błędy, żeby szybko znaleźć problemy w pipeline.
+	warehouse credits, żeby ocenić realny koszt przeliczeń.
+
+TARGET_LAG
+	target_lag to po prostu docelowa świeżość danych dla dynamic table w Snowflake — czyli maksymalne opóźnienie, 
+	jakie Snowflake ma próbować utrzymać względem tabel źródłowych.
+
+Jak to rozumieć
+	Jeśli ustawisz TARGET_LAG = '10 minutes', to mówisz Snowflake: „chcę, żeby ta tabela była zwykle nie starsza niż 10 minut względem źródeł”.
+	To nie jest twarda gwarancja co do minuty, tylko cel, do którego system dąży; actual lag może być większy, 
+		jeśli refresh potrwa dłużej albo pojawią się ograniczenia zasobów.
+*/
+CREATE OR REPLACE DYNAMIC TABLE dt_sales
+  TARGET_LAG = '15 minutes'
+  WAREHOUSE = transform_wh
+  REFRESH_MODE = INCREMENTAL
+AS
+SELECT
+  order_date,
+  SUM(total_amount) AS revenue
+FROM raw.sales_orders
+GROUP BY order_date;
+
+/*
+W tym przykładzie Snowflake ma utrzymywać wynik mniej więcej tak, aby nie był starszy niż 15 minut.
+
+DOWNSTREAM
+	Możesz też ustawić TARGET_LAG = DOWNSTREAM dla tabel pośrednich w pipeline.
+	To znaczy: ta tabela nie musi sama pilnować świeżości według własnego zegara, tylko odświeży się wtedy, gdy potrzebują tego tabele niżej w łańcuchu.
+	To jest bardzo przydatne, gdy masz kilka warstw dynamic tables i chcesz, żeby tylko ostatnia, „użytkowa” warstwa miała konkretny lag, 
+		a warstwy pośrednie były liczone zależnie od niej.
+
+Co warto zapamiętać
+	Krótszy target_lag = świeższe dane, ale zwykle więcej refreshy i wyższy koszt.
+	Dłuższy target_lag = tańsze i spokojniejsze odświeżanie, ale większe opóźnienie danych.
+
+Minimum dla dynamic tables to 60 sekund, więc nie nadają się do wymuszania świeżości poniżej tej granicy.
+	
+Intuicja biznesowa
+	Najłatwiej myśleć o target_lag jak o umowie SLA na świeżość danych:
+
+		dashboard finansowy może mieć 5 minutes,
+		warstwa pośrednia ETL może mieć DOWNSTREAM,
+		tabela końcowa do raportów może mieć 30 minutes albo 1 hour
+
+Przydatne SQL
+	Żeby znaleźć tabele, które mają zbyt duży lag:
+*/
+	SELECT *
+	FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES())
+	WHERE actual_lag > target_lag;
+
+--Żeby wyciągnąć tylko błędy odświeżeń:
+
+	SELECT *
+	FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(ERROR_ONLY => TRUE));
+
+/*
+Aby sprawdzić, ile kosztuje konkretna tabela dynamiczna, zacznij od tego zapytania. 
+Zawiera ono podsumowanie operacji odświeżania w podziale na tabele i typy odświeżania, pokazując, 
+ile operacji odświeżania zostało wykonanych i ile wierszy zostało przetworzonych.
+*/
+SELECT
+    name,
+    refresh_action,
+    COUNT(*) AS refreshes,
+    SUM(
+        statistics:numInsertedRows::INT
+        + statistics:numDeletedRows::INT
+        + statistics:numCopiedRows::INT
+    ) AS total_rows_processed
+FROM
+    TABLE(
+        INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(
+            NAME_PREFIX => 'mydb.myschema.',
+            RESULT_LIMIT => 1000
+        )
+    )
+WHERE
+    refresh_action != 'NO_DATA'
+GROUP BY
+    name, refresh_action
+ORDER BY
+    total_rows_processed DESC;
+
+/*
+Jak obniżać koszty
+	Największą dźwignią jest ustawienie sensownego TARGET_LAG, bo krótszy lag zwykle oznacza częstsze planowanie i więcej pracy dla Snowflake.
+	Warto też używać TARGET_LAG = DOWNSTREAM dla pośrednich tabel w pipeline, jeśli nie muszą być świeże same z siebie.
+	Jeśli refresh jest drogi, zmniejsz złożoność transformacji albo rozbij pipeline na prostsze dynamic tables.
+	Mogę też pokazać gotowy zestaw zapytań monitoringowych do Snowsight albo policzyć, jak zbudować dashboard kosztów i lagów dla dynamic tables.
+*/
+
+
+
+--CHANGES (na widoku i tabeli) - https://docs.snowflake.com/en/sql-reference/constructs/changes
+
+ CREATE OR REPLACE TABLE t1 (
+   id number(8) NOT NULL,
+   c1 varchar(255) default NULL
+ );
+
+-- Enable change tracking on the table.
+ ALTER TABLE t1 SET CHANGE_TRACKING = TRUE;
+
+ -- Initialize a session variable for the current timestamp.
+ SET ts1 = (SELECT CURRENT_TIMESTAMP());
+
+ INSERT INTO t1 (id,c1)
+ VALUES
+ (1,'red'),
+ (2,'blue'),
+ (3,'green');
+
+ DELETE FROM t1 WHERE id = 1;
+
+ UPDATE t1 SET c1 = 'purple' WHERE id = 2;
+
+ -- Query the change tracking metadata in the table during the interval from $ts1 to the current time.
+ -- Return the full delta of the changes.
+ SELECT *
+ FROM t1
+   CHANGES(INFORMATION => DEFAULT)
+   AT(TIMESTAMP => $ts1);
+
+ +----+--------+-----------------+-------------------+------------------------------------------+
+ | ID | C1     | METADATA$ACTION | METADATA$ISUPDATE | METADATA$ROW_ID                          |
+ |----+--------+-----------------+-------------------+------------------------------------------|
+ |  2 | purple | INSERT          | False             | 1614e92e93f86af6348f15af01a85c4229b42907 |
+ |  3 | green  | INSERT          | False             | 86df000054a4d1dc64d5d74a44c3131c4c046a1f |
+ +----+--------+-----------------+-------------------+------------------------------------------+
+
+ -- Query the change tracking metadata in the table during the interval from $ts1 to the current time.
+ -- Return the append-only changes.
+ SELECT *
+ FROM t1
+   CHANGES(INFORMATION => APPEND_ONLY)
+   AT(TIMESTAMP => $ts1);
+
+ +----+-------+-----------------+-------------------+------------------------------------------+
+ | ID | C1    | METADATA$ACTION | METADATA$ISUPDATE | METADATA$ROW_ID                          |
+ |----+-------+-----------------+-------------------+------------------------------------------|
+ |  1 | red   | INSERT          | False             | 6a964a652fa82974f3f20b4f49685de54eeb4093 |
+ |  2 | blue  | INSERT          | False             | 1614e92e93f86af6348f15af01a85c4229b42907 |
+ |  3 | green | INSERT          | False             | 86df000054a4d1dc64d5d74a44c3131c4c046a1f |
+ +----+-------+-----------------+-------------------+------------------------------------------+
+
+
+
+
+
+
+
+
+
+
