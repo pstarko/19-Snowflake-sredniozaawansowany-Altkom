@@ -30,3 +30,12 @@ FROM @my_stage/emp.csv
 FILE_FORMAT = (FORMAT_NAME = 'my_csv_format') FORCE = TRUE; --wymuszam ponowne ładowanie inaczej zostaje w pamięci stary plik
 
 select * from emp
+
+
+CREATE OR REPLACE TASK task_log_emp
+  WAREHOUSE = compute_wh
+  SCHEDULE = 'USING CRON * * * * * Europe/Warsaw'  -- co minutę
+AS
+INSERT INTO LOG_EMP (dataczas, iloscwierszy, status)
+SELECT CURRENT_TIMESTAMP, COUNT(*), 'Sprawdzone'
+FROM EMP;
