@@ -84,6 +84,7 @@ SELECT
   location
 FROM public_airport;
 
+explain
 select * from mv_airport_location;
 
 update public_airport set airport_name = 'Newtok - NEW' where airport_id = '36883EWU';
@@ -175,14 +176,16 @@ Jak to rozumieć
 */
 CREATE OR REPLACE DYNAMIC TABLE dt_sales
   TARGET_LAG = '15 minutes'
-  WAREHOUSE = transform_wh
+  WAREHOUSE = compute_wh
   REFRESH_MODE = INCREMENTAL
 AS
 SELECT
-  order_date,
-  SUM(total_amount) AS revenue
-FROM raw.sales_orders
-GROUP BY order_date;
+  country_geo_id,
+  count(*) AS counter
+FROM public_airport
+GROUP BY country_geo_id;
+
+select * from public_airport;
 
 /*
 W tym przykładzie Snowflake ma utrzymywać wynik mniej więcej tak, aby nie był starszy niż 15 minut.
@@ -209,9 +212,6 @@ Intuicja biznesowa
 Przydatne SQL
 	Żeby znaleźć tabele, które mają zbyt duży lag:
 */
-	SELECT *
-	FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES())
-	WHERE actual_lag > target_lag;
 
 --Żeby wyciągnąć tylko błędy odświeżeń:
 
@@ -235,7 +235,7 @@ SELECT
 FROM
     TABLE(
         INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(
-            NAME_PREFIX => 'mydb.myschema.',
+            NAME_PREFIX => 'public_data.public.',
             RESULT_LIMIT => 1000
         )
     )
