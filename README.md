@@ -1,0 +1,1 @@
+# 19-Snowflake-sredniozaawansowany-Altkom
