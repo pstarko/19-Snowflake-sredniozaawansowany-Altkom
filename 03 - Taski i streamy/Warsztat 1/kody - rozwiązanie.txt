@@ -17,3 +17,16 @@ CREATE OR REPLACE FILE FORMAT my_csv_format
   FIELD_DELIMITER = ';'
   SKIP_HEADER = 1
   FIELD_OPTIONALLY_ENCLOSED_BY = '"';
+
+
+
+-- Utworzenie stage
+CREATE OR REPLACE STAGE my_stage;
+
+--Dane z pliku CSV zostaną wgrane do tabeli EMP przy użyciu polecenia COPY INTO:
+
+COPY INTO EMP
+FROM @my_stage/emp.csv
+FILE_FORMAT = (FORMAT_NAME = 'my_csv_format') FORCE = TRUE; --wymuszam ponowne ładowanie inaczej zostaje w pamięci stary plik
+
+select * from emp
