@@ -2,11 +2,6 @@
 SELECT restcountries_by_common_name('Spain') AS raw_spain;
 
 
-
-
-
-
-
 -- Zadanie 1.2 
 WITH raw AS (
 SELECT restcountries_by_common_name('Spain') AS v
@@ -16,3 +11,36 @@ SELECT restcountries_by_common_name('Spain') AS v
     ARRAY_SIZE(v:data:objects) AS objects_count,
     v:data:meta:total::NUMBER AS total_results
     FROM raw;
+
+-- Zadanie 2.1
+WITH raw AS (
+SELECT restcountries_by_common_name('Spain') AS v
+),
+country AS (
+SELECT v:data:objects[0] AS c FROM raw
+)
+SELECT
+    c:names:common::STRING AS name_common,
+    c:names:official::STRING AS name_official,
+    c:codes:alpha_2::STRING AS alpha_2,
+    c:codes:alpha_3::STRING AS alpha_3,
+    c:region::STRING AS region,
+    c:subregion::STRING AS subregion,
+    c:population::NUMBER AS population,
+    c:flag:emoji::STRING AS flag_emoji,
+    c:capitals[0]:name::STRING AS capital_name
+FROM country;
+
+
+-- Zadanie 3.1 
+WITH raw AS (
+SELECT restcountries_by_common_name('Spain') AS v
+),
+country AS (
+SELECT v:data:objects[0] AS c FROM raw
+)
+    SELECT
+    f.index AS border_index,
+    f.value::STRING AS border_alpha3
+    FROM country, LATERAL FLATTEN(input => c:borders) f
+    ORDER BY f.index;
