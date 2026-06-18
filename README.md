@@ -4,10 +4,13 @@ Witaj! Tu znajdziesz wszystkie materiały do szkolenia **Snowflake średniozaawa
 
 ---
 ## 📋 Godziny szkolenia:
-🕥 czwartek: 9:00 - 15:00 <br>
-🕥 piątek: 9:00 - 15:00 <br>
+🕥 czwartek: 9:00 - 15:15 <br>
+🕥 piątek: 9:00 - 15:15 <br>
 <br>
-2 przerwy po 20 min ok. godz. 11:00 i 13:30<br>
+
+## 📋 Przerwy:
+2 przerwy po 20 min ok. godz. 11:00 i 13:30. <br>
+Przerwa obiadowa przeniesiona na koniec szkolenia. <br>
 
 
 ## 📋 Wymagania wstępne
