@@ -1,0 +1,18 @@
+-- Zadanie 1.1 
+SELECT restcountries_by_common_name('Spain') AS raw_spain;
+
+
+
+
+
+
+
+-- Zadanie 1.2 
+WITH raw AS (
+SELECT restcountries_by_common_name('Spain') AS v
+)
+    SELECT v:data AS data_node,
+    v:data:objects AS objects_array,
+    ARRAY_SIZE(v:data:objects) AS objects_count,
+    v:data:meta:total::NUMBER AS total_results
+    FROM raw;
