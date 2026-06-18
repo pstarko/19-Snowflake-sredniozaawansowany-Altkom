@@ -1,0 +1,19 @@
+CREATE OR REPLACE TABLE EMP (
+  last_name VARCHAR,
+  job_id VARCHAR,
+  salary NUMBER
+);
+
+-- Tabela LOG_EMP – zapis logów operacji
+CREATE OR REPLACE TABLE LOG_EMP (
+  id INT AUTOINCREMENT,
+  dataczas TIMESTAMP,
+  iloscwierszy NUMBER,
+  status VARCHAR
+);
+
+CREATE OR REPLACE FILE FORMAT my_csv_format
+  TYPE = 'CSV'
+  FIELD_DELIMITER = ';'
+  SKIP_HEADER = 1
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"';
