@@ -1,3 +1,9 @@
+--1. Tworzymy tabele do danych z pliku
+--2. Stworznie STAGE
+--3. Załadowanie danych z pliku przez COPY INTO
+--4. Tworzenie procedury
+--5. Jeśli jest aktualizacja pliku w MyStage -> koniecznie trzeba dane ponownie załadować pkt 3
+
 CREATE OR REPLACE TABLE EMP (
   last_name VARCHAR,
   job_id VARCHAR,
@@ -19,7 +25,6 @@ CREATE OR REPLACE FILE FORMAT my_csv_format
   FIELD_OPTIONALLY_ENCLOSED_BY = '"';
 
 
-
 -- Utworzenie stage
 CREATE OR REPLACE STAGE my_stage;
 
@@ -29,9 +34,10 @@ COPY INTO EMP
 FROM @my_stage/emp.csv
 FILE_FORMAT = (FORMAT_NAME = 'my_csv_format') FORCE = TRUE; --wymuszam ponowne ładowanie inaczej zostaje w pamięci stary plik
 
+delete from emp;
 select * from emp
 
-
+--Utworzenie Task nr 1 – Logowanie stanu danych
 CREATE OR REPLACE TASK task_log_emp
   WAREHOUSE = compute_wh
   SCHEDULE = 'USING CRON * * * * * Europe/Warsaw'  -- co minutę
@@ -39,6 +45,9 @@ AS
 INSERT INTO LOG_EMP (dataczas, iloscwierszy, status)
 SELECT CURRENT_TIMESTAMP, COUNT(*), 'Sprawdzone'
 FROM EMP;
+
+
+select * from LOG_EMP;
 
 --Utworzenie procedury – weryfikacja liczby wierszy
 
@@ -82,4 +91,14 @@ ALTER TASK task_log_emp RESUME; --potem root
 --SUSPEND odwrotnie
 ALTER TASK task_log_emp SUSPEND; --najpierw root
 ALTER TASK task_check_emp SUSPEND; --potem child
+
+
+delete from log_emp;
+
+select * from LOG_EMP;
+
+remove @my_stage/emp.csv
+
+
+list @my_stage
 
