@@ -37,4 +37,4 @@ Przed szkoleniem zainstaluj:
 
 
 ```bash
-git clone https://github.com/pstarko/18-Oracle-Database-PL-SQL-ALX.git
+git clone https://github.com/pstarko/19-Snowflake-sredniozaawansowany-Altkom.git
