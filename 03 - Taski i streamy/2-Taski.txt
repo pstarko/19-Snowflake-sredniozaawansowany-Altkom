@@ -1,0 +1,199 @@
+-- ---------------------------------------------------------
+-- 1) DANE ŹRÓDŁOWE I TABELA DOCelowa
+-- ---------------------------------------------------------
+-- Tabela źródłowa
+CREATE OR REPLACE TABLE raw.orders_src (
+  id NUMBER,
+  status STRING,
+  amount NUMBER(10,2),
+  updated_at TIMESTAMP_NTZ
+);
+
+-- Dane początkowe
+DEMO_TASKS.RAWINSERT INTO raw.orders_src VALUES
+  (1, 'NEW', 100.00, CURRENT_TIMESTAMP()),
+  (2, 'NEW',  50.00, CURRENT_TIMESTAMP());
+
+-- Warstwa docelowa (DW)
+USE SCHEMA dw;
+
+CREATE OR REPLACE TABLE dw.orders (
+  id NUMBER PRIMARY KEY,
+  status STRING,
+  amount NUMBER(10,2),
+  updated_at TIMESTAMP_NTZ
+);
+
+-- ---------------------------------------------------------
+-- 2) STREAM DO CDC
+-- ---------------------------------------------------------
+USE SCHEMA raw;
+
+-- Stream śledzący zmiany w raw.orders_src
+CREATE OR REPLACE STREAM raw.orders_stream
+  ON TABLE raw.orders_src
+  APPEND_ONLY = FALSE; -- domyślnie -  śledzi INSERT/UPDATE/DELETE, true => Tylko INSERTY
+
+-- ---------------------------------------------------------
+-- 3) PROCEDURA WSTAWIAJĄCA (opcjonalnie, używana w taskach)
+-- ---------------------------------------------------------
+USE SCHEMA dw;
+
+CREATE OR REPLACE PROCEDURE dw.sp_upsert_orders()
+RETURNS STRING
+LANGUAGE SQL
+AS
+$$
+BEGIN
+  MERGE INTO dw.orders t
+  USING (
+    SELECT id, status, amount, updated_at FROM raw.orders_src
+  ) s
+  ON t.id = s.id
+  WHEN MATCHED THEN UPDATE SET
+    status = s.status,
+    amount = s.amount,
+    updated_at = s.updated_at
+  WHEN NOT MATCHED THEN INSERT (id, status, amount, updated_at)
+  VALUES (s.id, s.status, s.amount, s.updated_at);
+
+  RETURN 'UPSERT DONE';
+END;
+$$;
+
+-- ---------------------------------------------------------
+-- 4) TASK #1: HARMONOGRAM (CRON co 5 minut)
+-- ---------------------------------------------------------
+-- Uwaga: Task dziedziczy kontekst (role/db/schema) z momentu utworzenia.
+--USE ROLE SYSADMIN;
+USE DATABASE demo_tasks;
+USE SCHEMA dw;
+
+CREATE OR REPLACE TASK dw.t_upsert_orders_cron
+  WAREHOUSE = compute_wh
+  SCHEDULE = 'USING CRON */5 * * * * Europe/Warsaw'
+AS
+  CALL dw.sp_upsert_orders();
+
+-- Włącz task
+ALTER TASK dw.t_upsert_orders_cron RESUME;
+
+-- Opcjonalny test ręczny (natychmiastowe uruchomienie)
+EXECUTE TASK dw.t_upsert_orders_cron;
+select * from dw.orders;
+
+-- ---------------------------------------------------------
+-- 5) DAG: RODZIC -> DZIECKO (AFTER)
+-- ---------------------------------------------------------
+-- Tabela agregatów dziennych
+CREATE OR REPLACE TABLE dw.orders_daily_agg (
+  dt DATE,
+  total_amount NUMBER(12,2),
+  order_cnt NUMBER
+);
+
+-- Task rodzic (wykonuje upsert; uruchamiany co 10 minut)
+CREATE OR REPLACE TASK dw.t_upsert_parent
+  WAREHOUSE = compute_wh
+  SCHEDULE = 'USING CRON */10 * * * * Europe/Warsaw'
+AS
+  CALL dw.sp_upsert_orders();
+
+-- Task dziecko (AFTER rodzica): agregacja dzienna
+CREATE OR REPLACE TASK dw.t_aggregate_child
+  WAREHOUSE = compute_wh
+  AFTER dw.t_upsert_parent
+AS
+  MERGE INTO dw.orders_daily_agg tgt
+  USING (
+    SELECT CURRENT_DATE() AS dt,
+           SUM(amount) AS total_amount,
+           COUNT(*) AS order_cnt
+    FROM dw.orders
+  ) src
+  ON tgt.dt = src.dt
+  WHEN MATCHED THEN UPDATE SET
+    total_amount = src.total_amount,
+    order_cnt = src.order_cnt
+  WHEN NOT MATCHED THEN INSERT (dt, total_amount, order_cnt)
+  VALUES (src.dt, src.total_amount, src.order_cnt);
+
+-- Włącz DAG
+ALTER TASK dw.t_upsert_parent SUSPEND;
+ALTER TASK dw.t_aggregate_child RESUME;
+ALTER TASK dw.t_upsert_parent RESUME;
+
+-- Opcjonalnie wymuś start rodzica, aby pokazać DAG w akcji
+-- EXECUTE TASK dw.t_upsert_parent;
+
+select * from dw.orders_daily_agg
+
+-- ---------------------------------------------------------
+-- 6) TASK #2: WARUNKOWY (STREAM + WHEN)
+-- ---------------------------------------------------------
+-- Uruchamia MERGE tylko, gdy stream ma nowe dane
+CREATE OR REPLACE TASK dw.t_cdc_apply
+  WAREHOUSE = compute_wh
+  SCHEDULE = '1 MINUTE'
+  WHEN SYSTEM$STREAM_HAS_DATA('raw.orders_stream')
+AS
+  MERGE INTO dw.orders t
+  USING (
+    SELECT id, status, amount, updated_at FROM raw.orders_stream
+  ) s
+  ON t.id = s.id
+  WHEN MATCHED THEN UPDATE SET
+    status = s.status,
+    amount = s.amount,
+    updated_at = s.updated_at
+  WHEN NOT MATCHED THEN INSERT (id, status, amount, updated_at)
+  VALUES (s.id, s.status, s.amount, s.updated_at);
+
+ALTER TASK dw.t_cdc_apply RESUME;
+
+-- ---------------------------------------------------------
+-- 7) SYMULACJA ZMIAN + WALIDACJA
+-- ---------------------------------------------------------
+-- Wstaw/zmień dane, aby pokazać działanie WHEN + STREAM
+USE SCHEMA raw;
+
+-- Nowe zamówienie i aktualizacja istniejącego
+INSERT INTO raw.orders_src VALUES (3, 'NEW', 75.00, CURRENT_TIMESTAMP());
+UPDATE raw.orders_src SET status = 'PAID', amount = 120.00, updated_at = CURRENT_TIMESTAMP() WHERE id = 1;
+
+-- Daj taskowi chwilę (harmonogram 1 min) lub uruchom ręcznie DAG rodzica:
+EXECUTE TASK dw.t_cdc_apply;
+
+-- Sprawdź stan danych w DW
+USE SCHEMA dw;
+SELECT * FROM dw.orders ORDER BY id;
+
+-- Sprawdź agregaty (po uruchomieniu rodzica lub po czasie)
+SELECT * FROM dw.orders_daily_agg ORDER BY dt DESC;
+
+-- ---------------------------------------------------------
+-- 8) MONITORING I DEBUG
+-- ---------------------------------------------------------
+-- Lista tasków w schemacie
+SHOW TASKS IN SCHEMA dw;
+
+-- Historia konkretnego taska (ostatnie 50 przebiegów)
+SELECT *
+FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
+  RESULT_LIMIT => 50
+))
+ORDER BY SCHEDULED_TIME DESC;
+
+-- Lista zależności tasków
+SELECT *
+FROM TABLE(INFORMATION_SCHEMA.TASK_DEPENDENTS(
+  TASK_NAME => 'demo_tasks.dw.t_upsert_parent',
+  RECURSIVE => TRUE
+));
+
+-- ---------------------------------------------------------
+-- 9) SPRZĄTANIE
+-- ---------------------------------------------------------
+
+-- -- Usuń obiekty
+DROP DATABASE demo_tasks;
