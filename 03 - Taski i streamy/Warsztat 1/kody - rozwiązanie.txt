@@ -67,3 +67,19 @@ def run(session):
     
     return "Brak danych w LOG_EMP"
 $$;
+
+--Utworzenie Task nr 2 – Uruchomienie procedury
+CREATE OR REPLACE TASK task_check_emp
+  WAREHOUSE = compute_wh
+  AFTER task_log_emp
+AS
+CALL check_emp_count();
+
+
+ALTER TASK task_check_emp RESUME; --najpierw child
+ALTER TASK task_log_emp RESUME; --potem root
+
+--SUSPEND odwrotnie
+ALTER TASK task_log_emp SUSPEND; --najpierw root
+ALTER TASK task_check_emp SUSPEND; --potem child
+
