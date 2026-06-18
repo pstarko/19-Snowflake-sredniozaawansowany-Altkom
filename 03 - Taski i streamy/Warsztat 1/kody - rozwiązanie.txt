@@ -39,3 +39,31 @@ AS
 INSERT INTO LOG_EMP (dataczas, iloscwierszy, status)
 SELECT CURRENT_TIMESTAMP, COUNT(*), 'Sprawdzone'
 FROM EMP;
+
+--Utworzenie procedury – weryfikacja liczby wierszy
+
+CREATE OR REPLACE PROCEDURE check_emp_count()
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+PACKAGES = ('snowflake-snowpark-python')
+HANDLER = 'run'
+AS
+$$
+def run(session):
+    result = session.sql("SELECT id, iloscwierszy FROM LOG_EMP ORDER BY dataczas DESC LIMIT 1").collect()
+    
+    if result:
+        log_id = result[0]['ID']
+        row_count = result[0]['ILOSCWIERSZY']
+        
+        if row_count == 107:
+            session.sql(f"UPDATE LOG_EMP SET status = 'Potwierdzone' WHERE id = {log_id}").collect()
+            return "Potwierdzone"
+        else:
+            session.sql("DELETE FROM EMP").collect()
+            session.sql(f"UPDATE LOG_EMP SET status = 'Anulowane' WHERE id = {log_id}").collect()
+            return "Anulowane"
+    
+    return "Brak danych w LOG_EMP"
+$$;
