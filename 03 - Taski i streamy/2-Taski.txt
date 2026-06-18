@@ -10,7 +10,7 @@ CREATE OR REPLACE TABLE raw.orders_src (
 );
 
 -- Dane początkowe
-DEMO_TASKS.RAWINSERT INTO raw.orders_src VALUES
+INSERT INTO DEMO_TASKS.RAWINSERT INTO raw.orders_src VALUES
   (1, 'NEW', 100.00, CURRENT_TIMESTAMP()),
   (2, 'NEW',  50.00, CURRENT_TIMESTAMP());
 
