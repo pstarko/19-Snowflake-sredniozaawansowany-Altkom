@@ -14,7 +14,14 @@ INSERT INTO raw.orders_src VALUES
   (1, 'NEW', 100.00, CURRENT_TIMESTAMP()),
   (2, 'NEW',  50.00, CURRENT_TIMESTAMP());
 
+INSERT INTO raw.orders_src VALUES
+  (3, 'OLDer', 999.00, CURRENT_TIMESTAMP())
+
+INSERT INTO raw.orders_src VALUES
+  (4, 'OLDer2', 999.00, CURRENT_TIMESTAMP())
 -- Warstwa docelowa (DW)
+
+select * from raw.orders_src
 USE SCHEMA dw;
 
 CREATE OR REPLACE TABLE dw.orders (
@@ -66,7 +73,6 @@ $$;
 -- ---------------------------------------------------------
 -- Uwaga: Task dziedziczy kontekst (role/db/schema) z momentu utworzenia.
 --USE ROLE SYSADMIN;
-USE DATABASE demo_tasks;
 USE SCHEMA dw;
 
 CREATE OR REPLACE TASK dw.t_upsert_orders_cron
@@ -81,6 +87,7 @@ ALTER TASK dw.t_upsert_orders_cron RESUME;
 -- Opcjonalny test ręczny (natychmiastowe uruchomienie)
 EXECUTE TASK dw.t_upsert_orders_cron;
 select * from dw.orders;
+delete from dw.orders;
 
 -- ---------------------------------------------------------
 -- 5) DAG: RODZIC -> DZIECKO (AFTER)
@@ -134,7 +141,7 @@ select * from dw.orders_daily_agg
 -- Uruchamia MERGE tylko, gdy stream ma nowe dane
 CREATE OR REPLACE TASK dw.t_cdc_apply
   WAREHOUSE = compute_wh
-  SCHEDULE = '1 MINUTE'
+  SCHEDULE = 'USING CRON */1 * * * * Europe/Warsaw'
   WHEN SYSTEM$STREAM_HAS_DATA('raw.orders_stream')
 AS
   MERGE INTO dw.orders t
@@ -158,7 +165,7 @@ ALTER TASK dw.t_cdc_apply RESUME;
 USE SCHEMA raw;
 
 -- Nowe zamówienie i aktualizacja istniejącego
-INSERT INTO raw.orders_src VALUES (3, 'NEW', 75.00, CURRENT_TIMESTAMP());
+INSERT INTO raw.orders_src VALUES (6, 'NEW', 75.00, CURRENT_TIMESTAMP());
 UPDATE raw.orders_src SET status = 'PAID', amount = 120.00, updated_at = CURRENT_TIMESTAMP() WHERE id = 1;
 
 -- Daj taskowi chwilę (harmonogram 1 min) lub uruchom ręcznie DAG rodzica:
@@ -166,6 +173,8 @@ EXECUTE TASK dw.t_cdc_apply;
 
 -- Sprawdź stan danych w DW
 USE SCHEMA dw;
+select * from raw.orders_src;
+delete from raw.orders_src;
 SELECT * FROM dw.orders ORDER BY id;
 
 -- Sprawdź agregaty (po uruchomieniu rodzica lub po czasie)
@@ -187,10 +196,11 @@ ORDER BY SCHEDULED_TIME DESC;
 -- Lista zależności tasków
 SELECT *
 FROM TABLE(INFORMATION_SCHEMA.TASK_DEPENDENTS(
-  TASK_NAME => 'demo_tasks.dw.t_upsert_parent',
+  TASK_NAME => 'dw.t_upsert_orders_cron',
   RECURSIVE => TRUE
 ));
-
+--dw.t_upsert_orders_cron
+--dw.t_cdc_apply
 -- ---------------------------------------------------------
 -- 9) SPRZĄTANIE
 -- ---------------------------------------------------------
