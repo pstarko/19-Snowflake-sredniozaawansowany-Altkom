@@ -1,0 +1,141 @@
+drop table orders;
+
+-- Tabela źródłowa
+CREATE OR REPLACE TABLE orders (
+  id NUMBER PRIMARY KEY,
+  status STRING
+);
+
+-- Strumień śledzący zmiany w tabeli
+CREATE OR REPLACE STREAM orders_stream ON TABLE orders; -- standard, widzi insert/update/delete
+
+-- Stream zwraca tylko to, co przybyło od czasu utworzenia
+select * from orders_stream;
+
+INSERT INTO orders VALUES (1, 'NEW1'), (2, 'NEW2');
+
+select * from orders_stream;
+
+UPDATE orders SET status = 'PAID3' WHERE id = 2; 
+
+select * from orders_stream;
+/*
+Jak Snowflake rejestruje zmiany?
+Snowflake Stream nie śledzi operacji SQL (INSERT/UPDATE/DELETE), tylko zmiany na poziomie wierszy w micro-partycjach.
+
+UPDATE w Snowflake to wewnętrznie DELETE + INSERT:
+
+stary wiersz → wpis z METADATA$ACTION = 'DELETE'
+nowy wiersz → wpis z METADATA$ACTION = 'INSERT'
+
+Dlaczego więc METADATA$ISUPDATE = FALSE?
+Kolumna METADATA$ISUPDATE = TRUE pojawia się tylko wtedy, gdy w tym samym batch'u zmian stream widzi parę DELETE+INSERT dla tego samego klucza — co sygnalizuje logiczny UPDATE.
+
+Problem: stream zawierał już nieprzeczytane dane z wcześniejszego INSERT (rekordy 1 i 2). Po UPDATE, Snowflake nie mógł jednoznacznie "sparować" DELETE+INSERT jako update, bo offset streamu nie był wyczyszczony.
+
+Żeby zobaczyć zmianę w METADATA$ISUPDATE
+*/
+-- 1. Skonsumuj istniejące dane ze streamu
+CREATE OR REPLACE TABLE orders_snapshot AS
+SELECT * FROM orders_stream;
+
+-- 2. Teraz zrób UPDATE
+UPDATE orders SET status = 'PAID2' WHERE id = 2;
+
+-- 3. Sprawdź stream
+SELECT *, METADATA$ACTION, METADATA$ISUPDATE FROM orders_stream;
+*/
+
+select * from orders;
+
+--Wirtualna konsumpcja streamu, potrzebna do wyczysczenia streamu:
+
+-- 1. Tworzymy tymczasową tabelę o identycznej strukturze (tylko raz)
+CREATE OR REPLACE TEMPORARY TABLE dummy_table LIKE orders;
+
+-- 2. "Wirtualna" konsumpcja - to przesunie offset streamu
+INSERT INTO dummy_table 
+SELECT id, status FROM orders_stream WHERE 1=0;
+
+-- 3. Teraz Twój stream jest "pusty" (offset jest na bieżąco z tabelą orders)
+SELECT * FROM orders_stream; -- zwróci 0 rekordów
+
+select * from orders;
+
+update orders set status = 'PAID' where id = 1;
+
+--teraz METADATA$ISUPDATE pokaże TRUE
+SELECT * FROM orders_stream; 
+
+
+DELETE FROM orders WHERE id = 1; 
+
+select * from orders_stream;
+
+CREATE OR REPLACE TABLE orders_target LIKE orders;  -- pusta kopia struktury
+
+--  MERGE, który:
+-- - dla INSERT (i "nowej" części UPDATE) wstawia/aktualizuje wiersz,
+-- - dla DELETE usuwa wiersz z docelowej.
+-- to może generować bład przy UPDATE (duplicate row)
+MERGE INTO orders_target t
+USING (
+  SELECT METADATA$ACTION AS action, id, status
+  FROM orders_stream
+) s
+ON t.id = s.id
+WHEN MATCHED AND s.action = 'DELETE' THEN DELETE
+WHEN MATCHED AND s.action = 'INSERT' THEN UPDATE SET t.status = s.status
+WHEN NOT MATCHED AND s.action = 'INSERT' THEN INSERT (id, status) VALUES (s.id, s.status);
+
+select * from orders_target;
+select * from orders;
+
+update orders set status = 'PAID2' where id = 1;
+
+
+SELECT METADATA$ACTION, METADATA$ISUPDATE, id, status
+FROM orders_stream;
+
+
+---Rozwiązanie
+MERGE INTO orders_target t
+USING (
+  WITH s AS (
+    SELECT
+      METADATA$ACTION AS action,
+      METADATA$ISUPDATE AS is_update,
+      METADATA$ROW_ID AS row_id,
+      id,
+      status
+    FROM orders_stream
+  ),
+  -- Wybieramy najnowszy wiersz na klucz (jeśli był UPDATE, wygra INSERT z nowszym row_id)
+  s2 AS (
+    SELECT s.*
+    FROM (
+      SELECT
+        s.*,
+        ROW_NUMBER() OVER (PARTITION BY id ORDER BY row_id DESC) AS rn
+      FROM s
+    ) s
+    WHERE s.rn = 1
+  )
+  SELECT
+    -- jeśli najnowszy to INSERT -> traktuj jako INSERT/UPSERT,
+    -- jeśli najnowszy to DELETE -> traktuj jako DELETE
+    action,
+    id,
+    status
+  FROM s2
+) x
+ON t.id = x.id
+WHEN MATCHED AND x.action = 'DELETE' THEN DELETE
+WHEN MATCHED AND x.action = 'INSERT' THEN UPDATE SET t.status = x.status
+WHEN NOT MATCHED AND x.action = 'INSERT' THEN INSERT (id, status) VALUES (x.id, x.status);
+
+
+drop table orders;
+drop table orders_snapshot;
+drop table dummy_table;
+drop stream orders_stream;
