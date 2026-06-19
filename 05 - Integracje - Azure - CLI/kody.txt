@@ -14,3 +14,38 @@ STORAGE_INTEGRATION = azure_integration
 DIRECTORY = (enable = TRUE)
 
 SHOW STAGES;
+
+
+
+Aktualizacja pliku w Snowflake po aktualizacji w Azure:
+
+-- 1. Odśwież listę plików na stage'u (synchronizacja z Azure)
+ALTER STAGE azure_stage REFRESH;
+
+--podejrzyj pierwsze 5 wierszy
+SELECT $1
+FROM @azure_stage/AllData_snowflake.csv
+LIMIT 5;
+
+-- 2. Sprawdź co jest na stage'u
+LIST @azure_stage;
+
+
+-- 3. Załaduj dane
+delete from alldata;
+
+COPY INTO alldata
+FROM @azure_stage/AllData_snowflake.csv
+FILE_FORMAT = (
+  TYPE = CSV
+  SKIP_HEADER = 1
+  FIELD_DELIMITER = ';'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+)
+FORCE = TRUE;
+
+
+-- 4. Sprawdź wynik
+SELECT COUNT(*) FROM alldata;
+
+SELECT * FROM alldata;
