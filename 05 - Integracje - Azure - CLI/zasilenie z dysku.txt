@@ -1,0 +1,91 @@
+--plik konfiguracyjny SNOWFLAKE CLI -> C:\Users\przem\AppData\Local\Snowflake
+
+
+C:\Windows\System32>snow sql
+C:\Users\przem\AppData\Local\pyapp\data\snowflake-cli\15014105689696889537\3.16.0\python\lib\site-packages\snowflake\cli\api\config.py:274: UserWarning: Unauthorized users (Administratorzy) have access to configuration file C:\Users\przem\AppData\Local\snowflake\config.toml.
+Run `icacls "C:\Users\przem\AppData\Local\snowflake\config.toml" /remove:g <USER_ID>` on those users to restrict permissions.
+  warnings.warn(
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Welcome to Snowflake-CLI REPL                                                                                       │
+│ Type 'exit' or 'quit' to leave                                                                                      │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ > LIST @~;
++-------------------------------------------------------------------------------------------------------------+
+| name                             | size  | md5                              | last_modified                 |
+|----------------------------------+-------+----------------------------------+-------------------------------|
+| EmployeesUserStage/Employees.csv | 8448  | 25669e3dcb622c790f2d896781163ccb | Fri, 30 Aug 2024 15:03:46 GMT |
+| EmployeesWarehouse/Employees.csv | 8448  | d365d095ab84a69146eb0504ca1b4e8a | Fri, 30 Aug 2024 15:10:21 GMT |
+| MY_STAGE/emp2.csv.gz             | 944   | 2f23892989d48f322ec1677d7959d4e2 | Thu, 18 Jun 2026 15:30:49 GMT |
+| TaxiZoneFiles/Cabs1.csv          | 1776  | e612823d6a3794eb1047e78c3b9028a8 | Thu, 4 Jul 2024 14:41:34 GMT  |
+| TaxiZoneFiles/TaxiZones.csv      | 12336 | f7505c18c11c4bb19961f33f7ed8844a | Tue, 2 Jul 2024 17:17:08 GMT  |
++-------------------------------------------------------------------------------------------------------------+
+
+
+ > PUT file://D:/SQL_DATA/emp2.csv @MY_STAGE AUTO_COMPRESS=TRUE;
++-------------------------------------------------------------------------------------------------------------------+
+| source   | target      | source_size | target_size | source_compression | target_compression | status   | message |
+|----------+-------------+-------------+-------------+--------------------+--------------------+----------+---------|
+| emp2.csv | emp2.csv.gz | 2615        | 944         | NONE               | GZIP               | UPLOADED |         |
++-------------------------------------------------------------------------------------------------------------------+
+
+ > list @my_stage
+   ;
++------------------------------------------------------------------------------------------------+
+| name                 | size | md5                              | last_modified                 |
+|----------------------+------+----------------------------------+-------------------------------|
+| my_stage/emp.csv     | 64   | 3fadb482809df8930c355c0349eb4cc1 | Thu, 18 Jun 2026 13:00:36 GMT |
+| my_stage/emp2.csv.gz | 944  | daab64c34e3c731e1a9041a796d12870 | Thu, 18 Jun 2026 15:34:43 GMT |
++------------------------------------------------------------------------------------------------+
+
+--automatycznie kompresuje - jak tego nie chcesz to FALSE.
+
+ > PUT file://D:/SQL_DATA/emp2.csv @MY_STAGE AUTO_COMPRESS=FALSE;
++----------------------------------------------------------------------------------------------------------------+
+| source   | target   | source_size | target_size | source_compression | target_compression | status   | message |
+|----------+----------+-------------+-------------+--------------------+--------------------+----------+---------|
+| emp2.csv | emp2.csv | 2615        | 2624        | NONE               | NONE               | UPLOADED |         |
++----------------------------------------------------------------------------------------------------------------+
+
+ > LIST @MY_STAGE;
++------------------------------------------------------------------------------------------------+
+| name                 | size | md5                              | last_modified                 |
+|----------------------+------+----------------------------------+-------------------------------|
+| my_stage/emp.csv     | 64   | 3fadb482809df8930c355c0349eb4cc1 | Thu, 18 Jun 2026 13:00:36 GMT |
+| my_stage/emp2.csv    | 2624 | 2cb43afc49a4f966a81769c0ce62b311 | Thu, 18 Jun 2026 15:36:20 GMT |
+| my_stage/emp2.csv.gz | 944  | daab64c34e3c731e1a9041a796d12870 | Thu, 18 Jun 2026 15:34:43 GMT |
++------------------------------------------------------------------------------------------------+
+
+ >
+
+--Jeśli chcę to zautomatyzować to TASK (pamiętaj, że tam może być TYLKO JEDNO POLECENIE DML
+SELECT
+  *
+FROM
+  EMP2
+
+truncate table emp2;
+
+CREATE OR REPLACE TASK load_csv_from_stage_task
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = '1 MINUTE'
+AS
+EXECUTE IMMEDIATE $$
+BEGIN    
+    COPY INTO emp2
+    FROM @MY_STAGE
+    FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1
+    FIELD_DELIMITER = ';')
+    FORCE = TRUE
+    ON_ERROR = 'CONTINUE';
+END;
+$$;
+
+
+ALTER TASK load_csv_from_stage_task RESUME;  
+EXECUTE TASK load_csv_from_stage_task;
+
+
+SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(TASK_NAME=>'LOAD_CSV_FROM_STAGE_TASK')) ORDER BY SCHEDULED_TIME DESC LIMIT 5;
+
+LIST @MY_STAGE;
