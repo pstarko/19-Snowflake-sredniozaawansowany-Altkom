@@ -1,0 +1,17 @@
+[cli]
+ignore_new_version_warning = false
+
+[cli.logs]
+save_logs = true
+path = "C:\\Users\\przem\\AppData\\Local\\snowflake\\logs"
+level = "info"
+
+[connections.default]
+account = "x-x"
+user = "pstarosta"
+password = ""
+port = 443
+database = "PUBLIC_DATA"
+schema = "PUBLIC"
+warehouse = "COMPUTE_WH"
+role = "ACCOUNTADMIN"
