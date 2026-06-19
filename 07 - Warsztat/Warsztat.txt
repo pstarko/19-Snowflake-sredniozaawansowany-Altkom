@@ -1,0 +1,12 @@
+--Zadanie
+
+/*
+1. Pobierz dane z API Country na temat oficjalnej nazwy, regionu, populacji i sąsiadów dla Francji, Niemiec i Włoch.
+2. Zapisz plik jako CSV korzystają z UI rezultatu
+3. Stwórz stage i podepnij przez CLI do niego plik
+4. Stwórz automat do pobierania pliku co 15 minut i ładowania danych do tabeli
+5. Pobierz podobne dane z kolejnych państw: Norwegia, Szwecja, Dania i dodaj je do pliku
+6. Zaktualizuj dane w stage
+7. Sprawdź czy automat działa i czy w tabeli są kolejne państwa po uruchomieniu automatu.
+
+*/
