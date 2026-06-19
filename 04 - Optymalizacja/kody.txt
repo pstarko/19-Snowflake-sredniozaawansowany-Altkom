@@ -1,0 +1,166 @@
+ALTER SESSION SET USE_CACHED_RESULT = FALSE;
+
+	CREATE OR REPLACE TABLE sales_no_cluster (
+		sale_id        NUMBER,
+		sale_date      DATE,
+		region_id      NUMBER,
+		product_id     NUMBER,
+		customer_id    NUMBER,
+		amount         NUMBER(12,2)
+	);
+
+
+	CREATE OR REPLACE TABLE sales_with_cluster (
+		sale_id        NUMBER,
+		sale_date      DATE,
+		region_id      NUMBER,
+		product_id     NUMBER,
+		customer_id    NUMBER,
+		amount         NUMBER(12,2)
+	)
+	CLUSTER BY (sale_date);
+
+	
+    CREATE OR REPLACE TEMP TABLE sales_seed AS
+	SELECT
+		SEQ4()                                              AS sale_id,
+		DATEADD(day, UNIFORM(0, 729, RANDOM()), '2024-01-01'::DATE) AS sale_date,
+		UNIFORM(1, 101, RANDOM())                           AS region_id,
+		UNIFORM(1, 5001, RANDOM())                          AS product_id,
+		UNIFORM(1, 200001, RANDOM())                        AS customer_id,
+		ROUND(UNIFORM(100, 100000, RANDOM()) / 100, 2)      AS amount
+	FROM TABLE(GENERATOR(ROWCOUNT => 5000000));
+
+	INSERT INTO sales_no_cluster
+	SELECT * FROM sales_seed;
+
+	INSERT INTO sales_with_cluster
+	SELECT * FROM sales_seed;
+
+
+    CREATE OR REPLACE TEMP TABLE sales_shuffle AS
+	SELECT *
+	FROM sales_no_cluster
+	ORDER BY RANDOM();
+
+    CREATE OR REPLACE TABLE sales_no_cluster AS
+	SELECT * FROM sales_shuffle;
+
+    
+	SELECT SYSTEM$CLUSTERING_INFORMATION('sales_no_cluster', '(sale_date)');
+	SELECT SYSTEM$CLUSTERING_INFORMATION('sales_with_cluster', '(sale_date)');
+
+ /*
+1. Naturalne klastrowanie (Natural Clustering)
+W Snowflake każda tabela jest zawsze w jakimś stopniu "uklastrowana". Gdy dane są ładowane do tabeli, Snowflake zapisuje je w mikro-partycjach w takiej kolejności, w jakiej przychodzą. Jeśli Twoje dane były ładowane chronologicznie (np. sprzedaż z dzisiaj została dodana po sprzedaży z wczoraj), tabela wykazuje "naturalne klastrowanie" po dacie.
+
+Funkcja SYSTEM$CLUSTERING_INFORMATION nie sprawdza metadanych tabeli pod kątem tego, czy ustawiono CLUSTER BY, ale analizuje fizyczny rozkład danych w mikro-partycjach dla kolumn, które podałeś w argumencie.
+
+
+2. Interpretatcja wyniku "cluster_by_keys"
+Wartość "cluster_by_keys" : "LINEAR(sale_date)" w raporcie tej funkcji nie oznacza, że jawnie zdefiniowałeś klaster (Clustering Key). 
+Oznacza ona jedynie, że funkcja analizuje statystyki pod kątem podanego przez Ciebie klucza (w tym przypadku sale_date).
+
+Snowflake mówi Ci: "Oto statystyki klastrowania dla tej tabeli, przy założeniu, że interesuje nas liniowy rozkład dacie sprzedaży". Nawet jeśli tabela nie ma zdefiniowanego CLUSTER BY, Snowflake zwróci:
+
+total_partition_count: całkowitą liczbę mikro-partycji.
+total_constant_partition_count: ile z nich jest "stałych" (tzn. wartości sale_date w tej partycji nie pokrywają się z innymi partycjami).
+average_overlaps oraz average_depth: wskaźniki pokazujące, jak dobrze dane są w rzeczywistości pogrupowane.
+
+---Average Overlaps (Średnie nakładanie się)
+Ten wskaźnik mówi, z iloma innymi mikro-partycjami "dzieli się" zakresami wartości dana mikro-partycja.
+
+Przykład: Jeśli partycja A zawiera daty od 2023-01-01 do 2023-01-10, a partycja B zawiera daty od 2023-01-05 do 2023-01-15, to one się nakładają (zakres 05-10 stycznia jest w obu).
+Interpretacja:
+    0.0: Idealny stan. Każda partycja zawiera unikalny zakres wartości. Snowflake przy zapytaniu (np. o konkretny dzień) musi otworzyć tylko jedną mikro-partycję.
+    Wysoka wartość: Oznacza, że te same wartości (lub zakresy) są rozsiane po wielu różnych plikach fizycznych. Snowflake musi przeszukać ("zeskanować") znacznie więcej danych, co wydłuża czas zapytania.
+
+----Average Depth (Średnia głębokość)
+To najważniejszy wskaźnik wydajności. Mówi on, ile mikro-partycji "nakłada się" na siebie w typowym punkcie danych.
+
+Można to sobie wyobrazić jako "warstwy" danych:
+
+    Depth = 1: Każdy punkt danych (np. konkretna data 2024-06-19) znajduje się tylko w jednej mikro-partycji. To jest cel optymalizacji.
+    Depth = 5: Oznacza, że aby znaleźć wszystkie rekordy dla konkretnej daty, Snowflake musi otworzyć i przeszukać średnio 5 różnych mikro-partycji.
+    
+Interpretacja:
+    Blisko 1.0: Tabela jest doskonale sklastrowana. Zapytania z klauzulą WHERE będą błyskawiczne.
+    Wysoka wartość (np. powyżej 10-20): Sugeruje, że dane są bardzo nieuporządkowane. Jeśli Twoje zapytania po tej kolumnie działają wolno, powinieneś rozważyć ustawienie CLUSTER BY.
+
+average_depth	  Interpretacja
+1 - 2	          Doskonałe klastrowanie
+2 - 5	          Bardzo dobre
+5 - 10	          Akceptowalne
+10 - 20	          Warto przeanalizować
+> 20	          Silny kandydat do CLUSTER BY
+> 50	          Zwykle bardzo mocny kandydat
+
+average_overlaps	Interpretacja
+0 - 2	            Bardzo dobrze
+2 - 10	            Normalnie
+10 - 50	            Duże nakładanie
+> 50	            Słabe uporządkowanie danych
+
+nawet jeśli "average_depth": 30
+to nadal może nie mieć sensu klastrowanie, gdy:
+
+    tabela ma tylko kilka GB,
+    zapytania uruchamiane są sporadycznie,
+    nie filtrujesz po tej kolumnie.
+    Koszt klastrowania może być większy niż oszczędność.
+
+Kiedy warto założyć klaster
+    Tabela Sale: 100mln rekordów
+
+Najczęstsze zapytanie:
+    SELECT *
+    FROM sales
+    WHERE sale_date BETWEEN '2025-01-01' AND '2025-01-31';
+
+Wynik:
+    {
+      "average_depth": 45,
+      "average_overlaps": 60,
+      "total_partition_count": 15000
+    }
+
+To bardzo dobry kandydat do: ALTER TABLE sales CLUSTER BY (sale_date);
+*/
+
+SHOW TABLES LIKE 'sales_with_cluster';
+/*
+Spójrz na kolumnę cluster_key. Jeśli jest pusta, tabela nie ma jawnie zdefiniowanego klucza. 
+Jeśli chcesz zobaczyć różnicę, sprawdź statystyki dla kolumny, która jest zupełnie losowa (np. customer_id przy dużym zbiorze danych) – zobaczysz, że average_depth będzie tam znacznie wyższy niż przy sale_date.
+
+1. Pusta kolumna cluster_key
+Oznacza, że tabela jest utrzymywana w takim porządku, w jakim dane zostały do niej wrzucone. Snowflake nie wykonuje w tle żadnych operacji, aby te dane lepiej poukładać.
+
+    Koszty: Brak dodatkowych kosztów za klastrowanie.
+    Wydajność: Zależy od tego, czy dane wlatywały do bazy w sposób uporządkowany (tzw. klastrowanie naturalne).
+
+2. Wypełniona kolumna cluster_key (np. (sale_date))
+Oznacza, że dla tej tabeli zdefiniowano klucz klastrowania. Dopiero wtedy usługa Automatic Clustering zaczyna działać.
+
+    Koszty: Snowflake pobiera opłaty (w Credits) za pracę serwerów w tle, które stale sortują i przegrupowują mikro-partycje, by utrzymać wskaźnik average_depth jak najbliżej 1.
+    Wydajność: Gwarantowana wysoka wydajność przy filtrowaniu po tym kluczu, nawet jeśli dane są wrzucane do tabeli w całkowitym chaosie.
+*/
+
+	SELECT
+		sale_date,
+		SUM(amount) AS total_amount,
+		COUNT(*)    AS cnt
+	FROM sales_no_cluster
+	WHERE sale_date >= '2025-01-01'
+	  AND sale_date <  '2025-02-01'
+	GROUP BY sale_date
+	ORDER BY sale_date;
+
+	SELECT
+		sale_date,
+		SUM(amount) AS total_amount,
+		COUNT(*)    AS cnt
+	FROM sales_with_cluster
+	WHERE sale_date >= '2025-01-01'
+	  AND sale_date <  '2025-02-01'
+	GROUP BY sale_date
+	ORDER BY sale_date;
