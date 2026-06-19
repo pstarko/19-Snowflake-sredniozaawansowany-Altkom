@@ -7,3 +7,10 @@ CREATE OR REPLACE STORAGE INTEGRATION azure_integration
 
 
 describe integration azure_integration;
+
+CREATE OR REPLACE STAGE azure_stage
+URL =  'azure://ADRES_KONTENERA' 
+STORAGE_INTEGRATION = azure_integration
+DIRECTORY = (enable = TRUE)
+
+SHOW STAGES;
